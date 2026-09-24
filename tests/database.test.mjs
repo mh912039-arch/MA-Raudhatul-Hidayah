@@ -1,0 +1,53 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { PGlite } from '@electric-sql/pglite';
+
+test('PostgreSQL: RLS, atomic verification log, registration window, unique number and rate limit', async () => {
+ const pg = new PGlite();
+ await pg.exec(`
+ create role anon;create role authenticated;create role service_role bypassrls;
+ create schema auth;create table auth.users(id uuid primary key);
+ create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+ grant usage on schema auth to anon,authenticated,service_role;grant execute on function auth.uid() to public;
+ create schema storage;create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
+ create table storage.objects(id uuid default gen_random_uuid(),bucket_id text,name text);
+ alter table storage.objects enable row level security;
+ create function storage.foldername(text) returns text[] language sql immutable as $$select string_to_array($1,'/')$$;
+ grant usage on schema public,storage to anon,authenticated,service_role;
+ grant select,insert,update,delete on storage.objects to anon,authenticated,service_role;
+ `);
+ await pg.exec(await readFile(new URL('../supabase/schema.sql',import.meta.url),'utf8'));
+ const admin='10000000-0000-4000-8000-000000000001', humas='10000000-0000-4000-8000-000000000002', outsider='10000000-0000-4000-8000-000000000003';
+ await pg.exec(`insert into auth.users values ('${admin}'),('${humas}'),('${outsider}');insert into profiles(id,name,role) values('${admin}','Admin Test','admin'),('${humas}','Humas Test','humas');update schools set ppdb_open=true,ppdb_start=current_date-1,ppdb_end=current_date+1;`);
+ const asRole=async(role,id='')=>pg.exec(`reset role;set role ${role};select set_config('request.jwt.claim.sub','${id}',false);`);
+ const insert=async(nisn,request=crypto.randomUUID())=>pg.query(`insert into ppdb_registrations(request_id,access_token_hash,academic_year,student_name,nisn,birth_date,gender,previous_school,parent_name,parent_phone,email,address,report_path,birth_path,consent) values($1,$2,'2027/2028','Siswa Contoh',$3,'2011-03-12','Perempuan','SMP Contoh','Wali Contoh','081234567890','test@example.com','Jalan Contoh 123','folder/rapor.pdf','folder/akta.pdf',true) returning id,registration_number,updated_at`,[request,'a'.repeat(64),nisn]);
+ await asRole('service_role');
+ const first=(await insert('0123456789')).rows[0],second=(await insert('0123456788')).rows[0];
+ assert.match(first.registration_number,/^PPDB-2027-\d{6}$/);assert.notEqual(first.registration_number,second.registration_number);
+ await assert.rejects(insert('0123456789'),/unique|duplicate/);
+ for(let i=0;i<6;i++){const r=await pg.query('select consume_submission_limit($1) as allowed',['b'.repeat(64)]);assert.equal(r.rows[0].allowed,i<5);}
+ await asRole('anon');await assert.rejects(pg.query('select * from ppdb_registrations'),/permission denied/);
+ await assert.rejects(pg.query("select consume_submission_limit($1)",['c'.repeat(64)]),/permission denied/);
+ assert.equal((await pg.query('select * from schools')).rows.length,1);
+ await asRole('authenticated',humas);assert.equal((await pg.query('select * from ppdb_registrations')).rows.length,0);
+ await assert.rejects(pg.query('update profiles set role=$1 where id=$2',['super_admin',humas]),/permission denied/);
+ await assert.rejects(pg.query('select verify_registration($1,$2,$3,$4)',[first.id,'Diterima','',first.updated_at]),/Forbidden/);
+ await pg.query("insert into posts(title,slug,category,body,author_id,published) values('Berita pengujian','berita-pengujian','Kegiatan','Isi berita pengujian lebih dari dua puluh karakter.',$1,true)",[humas]);
+ await pg.query("insert into posts(title,slug,category,body,author_id,published) values('Draf pengujian','draf-pengujian','Kegiatan','Isi berita pengujian lebih dari dua puluh karakter.',$1,false)",[humas]);
+ await asRole('anon');assert.equal((await pg.query('select * from posts')).rows.length,1);
+ await asRole('authenticated',outsider);assert.equal((await pg.query('select * from ppdb_registrations')).rows.length,0);
+ await assert.rejects(pg.query("insert into announcements(title,body,author_id) values('Tidak boleh','Bukan anggota pengelola sekolah.',$1)",[outsider]),/row-level security/);
+ await asRole('authenticated',admin);
+ await assert.rejects(pg.query('select verify_registration($1,$2,$3,$4)',[first.id,'Perlu revisi','',first.updated_at]),/Notes required/);
+ await pg.query('select verify_registration($1,$2,$3,$4)',[first.id,'Diterima','Berkas lengkap',first.updated_at]);
+ const logs=(await pg.query('select * from verification_logs')).rows;assert.equal(logs.length,1);assert.equal(logs[0].actor_id,admin);assert.equal(logs[0].new_status,'Diterima');
+ await assert.rejects(pg.query('select verify_registration($1,$2,$3,$4)',[first.id,'Ditolak','Alasan pengujian',first.updated_at]),/changed/);
+ await assert.rejects(pg.query('delete from verification_logs'),/permission denied/);
+ await pg.exec('reset role;update schools set maintenance=true');
+ await asRole('authenticated',humas);await assert.rejects(pg.query("update posts set title='Perubahan konten'"),/Maintenance/);
+ await asRole('service_role');await assert.rejects(insert('0123456787'),/Maintenance/);
+ await pg.exec('reset role;update schools set maintenance=false,ppdb_end=current_date-1,ppdb_start=current_date-10');
+ await asRole('service_role');await assert.rejects(insert('0123456787'),/closed/);
+ await pg.close();
+});

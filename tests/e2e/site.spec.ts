@@ -1,0 +1,21 @@
+import {test,expect} from '@playwright/test';
+test('public profile, news search, gallery and navigation',async({page})=>{
+ await page.goto('/');await expect(page.getByRole('heading',{name:'Ruang bertumbuh. Bekal masa depan.'})).toBeVisible();
+ await page.goto('/profil');await page.getByRole('tab',{name:'Visi & Misi'}).click();await expect(page.getByRole('heading',{name:'Misi yang kami jalankan'})).toBeVisible();
+ await page.goto('/berita');await page.getByRole('textbox',{name:'Cari berita'}).fill('tidak-ada-hasil-unik');await expect(page.getByText('Belum ada berita yang cocok dengan pencarian.')).toBeVisible();
+ await page.goto('/galeri');await page.getByRole('button',{name:'Lingkungan belajar Sekolah'}).click();await expect(page.getByRole('dialog')).toBeVisible();
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true);
+});
+test('PPDB validation, upload, confirmation, demo receipt and private status',async({page})=>{
+ await page.goto('/ppdb');await page.getByRole('button',{name:'Lanjutkan',exact:true}).click();await expect(page.getByRole('alert')).toBeVisible();
+ await page.getByRole('textbox',{name:'Nama lengkap siswa',exact:true}).fill('Siswa Pengujian');await page.getByRole('textbox',{name:'NISN',exact:true}).fill('0123456789');await page.getByRole('textbox',{name:'Tanggal lahir',exact:true}).fill('2011-03-12');
+ await page.getByRole('combobox',{name:'Jenis kelamin',exact:true}).click();await page.getByRole('option',{name:'Perempuan',exact:true}).click();await page.getByRole('textbox',{name:'Asal sekolah',exact:true}).fill('SMP Pengujian');await page.getByRole('button',{name:'Lanjutkan',exact:true}).click();
+ await page.getByRole('textbox',{name:'Nama orang tua / wali',exact:true}).fill('Wali Pengujian');await page.getByRole('textbox',{name:'Nomor telepon / WhatsApp',exact:true}).fill('081234567890');await page.getByRole('textbox',{name:'Email aktif',exact:true}).fill('test@example.com');await page.getByRole('textbox',{name:'Alamat lengkap',exact:true}).fill('Jalan Pengujian Nomor 123');await page.getByRole('button',{name:'Lanjutkan',exact:true}).click();
+ const pdf={name:'dokumen-uji.pdf',mimeType:'application/pdf',buffer:Buffer.from('%PDF-1.4\nData uji')};await page.getByLabel('Unggah rapor',{exact:true}).setInputFiles(pdf);await page.getByLabel('Unggah akta kelahiran',{exact:true}).setInputFiles(pdf);await page.getByRole('button',{name:'Lanjutkan',exact:true}).click();await page.getByRole('checkbox',{name:'Persetujuan data'}).check();await page.getByRole('button',{name:'Selesaikan simulasi'}).click();await expect(page.getByRole('heading',{name:'Simulasi selesai'})).toBeVisible();
+ await page.goto('/ppdb/status');await page.getByRole('textbox',{name:'Nomor registrasi',exact:true}).fill('SIMULASI-PPDB-2027');await page.getByLabel('Kode akses pribadi',{exact:true}).fill('DEMO');await page.getByRole('button',{name:'Cek status pendaftaran'}).click();await expect(page.getByRole('heading',{name:'Siswa Contoh'})).toBeVisible();
+});
+test('demo content editing and verification',async({page})=>{
+ await page.goto('/demo/konten');await page.getByRole('button',{name:'Tambah berita',exact:true}).click();await page.getByRole('textbox',{name:'Judul',exact:true}).fill('Artikel uji sekolah');await page.getByRole('textbox',{name:/^Isi berita/}).fill('Ini adalah isi berita untuk pengujian publikasi konten sekolah.');await page.getByRole('button',{name:'Simpan konten',exact:true}).click();await expect(page.getByRole('heading',{name:'Artikel uji sekolah',exact:true})).toBeVisible();
+ await page.goto('/demo/ppdb');await page.getByRole('row').filter({hasText:'Nadia Putri'}).getByRole('button',{name:'Periksa berkas'}).click();await page.getByRole('combobox',{name:'Status verifikasi'}).click();await page.getByRole('option',{name:'Diterima',exact:true}).click();await page.getByRole('button',{name:'Simpan hasil verifikasi'}).click();await expect(page.getByRole('row').filter({hasText:'Nadia Putri'})).toContainText('Diterima');
+});
+test('production admin route requires authentication',async({page})=>{await page.goto('/admin');await expect(page).toHaveURL(/\/login$/);await expect(page.getByRole('heading',{name:'Selamat datang kembali.'})).toBeVisible();});
